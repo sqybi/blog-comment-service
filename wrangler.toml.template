@@ -111,3 +111,7 @@ database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # TODO: Change this to you
 # [[vectorize]]
 # binding = "MY_INDEX"
 # index_name = "my-index"
+
+[[routes]]
+custom_domain = true
+pattern = "blog-comment-service.your-domain.com"  # TODO: Change this to your custom domain
