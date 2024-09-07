@@ -84,12 +84,44 @@ class DatabaseError extends Error {
   }
 }
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '',
+  'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+  'Access-Control-Max-Age': '86400', // 24 hours
+  'Access-Control-Allow-Headers': 'Content-Type, Range, X-Request-With',
+  'Access-Control-Expose-Headers': 'Content-Length, Content-Range',
+};
+
+const setCorsHeaderToResponse = async (
+  request: Request,
+  response: Response,
+  allowedOrigins: string[]
+): Promise<Response> => {
+  const origin = request.headers.get('Origin');
+  if (!origin) {
+    return new Response('Origin header not found', { status: 400 });
+  }
+  if (allowedOrigins.includes(origin)) {
+    corsHeaders['Access-Control-Allow-Origin'] = origin;
+  }
+
+  const new_headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(corsHeaders)) {
+    new_headers.set(key, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: new_headers,
+  });
+};
+
 const markdownToHtml = async (markdown: string): Promise<string> => {
   const file = await unified().use(remarkParse).use(remarkRehype).use(rehypeStringify).process(markdown);
   return file.toString();
 };
 
-const recursive_query = async (
+const recursiveQuery = async (
   db: D1Database,
   base_type: 'article' | 'comment',
   parent_id: string | number,
@@ -125,7 +157,7 @@ const recursive_query = async (
     } as Comment;
 
     if (is_recursive) {
-      const subcomments = await recursive_query(db, 'comment', result.id as number, true);
+      const subcomments = await recursiveQuery(db, 'comment', result.id as number, true);
       comment.children.push(...subcomments);
       // TODO(sqybi): Make sure the level of all subcomments is 1 greater than the parent
     }
@@ -141,69 +173,77 @@ export default {
   // during (or after) a request.
   // https://developers.cloudflare.com/queues/platform/javascript-apis/#producer
   async fetch(req, env, ctx): Promise<Response> {
+    const getReponse = async (body?: BodyInit | null, init?: ResponseInit) =>
+      setCorsHeaderToResponse(
+        req,
+        new Response(body, init),
+        env.ALLOWED_ORIGINS.split(';').map((s: string) => s.trim())
+      );
+
     try {
       const url = URL.parse(req.url);
       if (!url || url.pathname !== '/comment') {
-        return new Response('Not found', { status: 404 });
+        return getReponse('Not found', { status: 404 });
       }
 
+      // OPTIONS request for CORS
+      if (req.method === 'OPTIONS') {
+        return getReponse('OK', { headers: corsHeaders, status: 200 });
+      }
+
+      // POST request for adding a new comment
       if (req.method === 'POST') {
-        try {
-          const event = (await req.json()) as PostCommentEvent;
+        const event = (await req.json()) as PostCommentEvent;
 
-          // Check parent comment existence
-          let level = 0;
-          if (event.parent_comment_id) {
-            const query = env.COMMENT_DB.prepare(
-              'SELECT level \
-              FROM comments \
-              WHERE id = ?1 \
-              LIMIT 1'
-            );
-            const parent_comment = await query.bind(event.parent_comment_id).first();
-            if (!parent_comment) {
-              console.warn(`Parent comment ${event.parent_comment_id} not found`);
-              return new Response('Parent comment not found', { status: 404 });
-            }
-            level = Number.parseInt(parent_comment.level as string) + 1;
-          }
-
-          // Convert markdown to HTML
-          const html_content = await markdownToHtml(event.content);
-
-          // Insert into D1 database
-          const command = env.COMMENT_DB.prepare(
-            'INSERT INTO comments ( \
-            article_id, parent_id, level, author_name, author_email, author_website, markdown_content, html_content, \
-            comment_timestamp_ms) \
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)'
+        // Check parent comment existence
+        let level = 0;
+        if (event.parent_comment_id) {
+          const query = env.COMMENT_DB.prepare(
+            'SELECT level \
+            FROM comments \
+            WHERE id = ?1 \
+            LIMIT 1'
           );
-          const result = await command
-            .bind(
-              event.article_id,
-              event.parent_comment_id || 0,
-              level,
-              event.author,
-              event.email || '',
-              event.website || '',
-              event.content,
-              html_content,
-              event.timestamp_ms || new Date().getTime()
-            )
-            .run();
-          if (result.error) {
-            throw new DatabaseError(result.error);
+          const parent_comment = await query.bind(event.parent_comment_id).first();
+          if (!parent_comment) {
+            console.warn(`Parent comment ${event.parent_comment_id} not found`);
+            return getReponse('Parent comment not found', { status: 404 });
           }
-          console.log(result.results);
-          return new Response('{}');
-        } catch (e) {
-          console.error(`Error catched:\n${(e as Error).message}\n`);
-          if (e instanceof DatabaseError) {
-            return new Response('Database error', { status: 500 });
-          }
-          return new Response('Internal server error', { status: 500 });
+          level = Number.parseInt(parent_comment.level as string) + 1;
         }
-      } else if (req.method === 'GET') {
+
+        // Convert markdown to HTML
+        const html_content = await markdownToHtml(event.content);
+
+        // Insert into D1 database
+        const command = env.COMMENT_DB.prepare(
+          'INSERT INTO comments ( \
+          article_id, parent_id, level, author_name, author_email, author_website, markdown_content, html_content, \
+          comment_timestamp_ms) \
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)'
+        );
+        const result = await command
+          .bind(
+            event.article_id,
+            event.parent_comment_id || 0,
+            level,
+            event.author,
+            event.email || '',
+            event.website || '',
+            event.content,
+            html_content,
+            event.timestamp_ms || new Date().getTime()
+          )
+          .run();
+        if (result.error) {
+          throw new DatabaseError(result.error);
+        }
+        console.log(result.results);
+        return getReponse('{}');
+      }
+
+      // GET request for fetching comments
+      if (req.method === 'GET') {
         const params = url.searchParams;
         const fetch_event = {
           comment_base_type: params.get('comment_base_type') as 'article' | 'comment',
@@ -213,36 +253,37 @@ export default {
         if (fetch_event.comment_base_type === 'article') {
           // Check comment ID type
           if (Number.isInteger(fetch_event.comment_base_id)) {
-            return new Response('Invalid comment ID', { status: 400 });
+            return getReponse('Invalid comment ID', { status: 400 });
           }
         } else if (fetch_event.comment_base_type === 'comment') {
           // Check comment ID type
           fetch_event.comment_base_id = Number(fetch_event.comment_base_id);
           if (!Number.isInteger(fetch_event.comment_base_id)) {
-            return new Response('Invalid comment ID', { status: 400 });
+            return getReponse('Invalid comment ID', { status: 400 });
           }
         } else {
-          return new Response('Invalid comment base type', { status: 400 });
+          return getReponse('Invalid comment base type', { status: 400 });
         }
 
         // Query D1 database
-        const comments = await recursive_query(
+        const comments = await recursiveQuery(
           env.COMMENT_DB,
           fetch_event.comment_base_type,
           fetch_event.comment_base_id,
           fetch_event.is_recursive
         );
 
-        return new Response(JSON.stringify(comments));
+        return getReponse(JSON.stringify(comments));
       }
 
-      return new Response('Method not allowed', { status: 405 });
+      // Other methods are not allowed
+      return getReponse('Method not allowed', { status: 405 });
     } catch (e) {
       console.error(`Error catched:\n${(e as Error).message}\n`);
       if (e instanceof DatabaseError) {
-        return new Response('Database error', { status: 500 });
+        return getReponse('Database error', { status: 500 });
       }
-      return new Response('Internal server error', { status: 500 });
+      return getReponse('Internal server error', { status: 500 });
     }
   },
 } satisfies ExportedHandler<Env>;
