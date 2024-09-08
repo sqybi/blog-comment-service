@@ -54,6 +54,19 @@ type FetchCommentEvent = {
   is_recursive: boolean;
 };
 
+type EmailCommentProperties = {
+  comment_id: number;
+  comment_timestamp: number;
+  author_name: string;
+  author_email: string;
+  markdown_content: string;
+};
+
+type SendCommentNotificationEmailEvent = {
+  comment: EmailCommentProperties;
+  reply_to_comment: EmailCommentProperties | null;
+};
+
 type Comment = {
   // The unique identifier of the comment
   id: number;
@@ -75,6 +88,30 @@ type Comment = {
 
   // Subcomments
   children: Comment[];
+};
+
+type RecursiveQueryCommentsRow = {
+  id: number;
+  author_name: string;
+  author_email: string;
+  author_website: string;
+  html_content: string;
+  comment_timestamp_ms: number;
+  level: number;
+};
+
+type ParentCommentsRow = {
+  level: number;
+  id: number;
+  html_content: string;
+  markdown_content: string;
+  comment_timestamp_ms: number;
+  author_name: string;
+  author_email: string;
+};
+
+type IdOnlyCommentRow = {
+  id: number;
 };
 
 class DatabaseError extends Error {
@@ -101,7 +138,27 @@ const setCorsHeaderToResponse = async (
   if (!origin) {
     return new Response('Origin header not found', { status: 400 });
   }
-  if (allowedOrigins.includes(origin)) {
+  var is_allowed = false;
+  for (const allowedOrigin of allowedOrigins) {
+    if (allowedOrigin == '*') {
+      is_allowed = true;
+      break;
+    } else if (allowedOrigin.startsWith('/') && allowedOrigin.endsWith('/')) {
+      // Regex
+      if (RegExp(allowedOrigin.substring(1, allowedOrigin.length - 1)).test(origin)) {
+        is_allowed = true;
+        break;
+      }
+    } else {
+      if (origin === allowedOrigin) {
+        if (allowedOrigins.includes(origin)) {
+          is_allowed = true;
+          break;
+        }
+      }
+    }
+  }
+  if (is_allowed) {
     corsHeaders['Access-Control-Allow-Origin'] = origin;
   }
 
@@ -140,7 +197,9 @@ const recursiveQuery = async (
   const comments = [] as Comment[];
 
   const record =
-    base_type === 'article' ? await query_article.bind(parent_id).all() : await query_comment.bind(parent_id).all();
+    base_type === 'article'
+      ? await query_article.bind(parent_id).all<RecursiveQueryCommentsRow>()
+      : await query_comment.bind(parent_id).all<RecursiveQueryCommentsRow>();
   if (record.error) {
     throw new DatabaseError(record.error);
   }
@@ -168,10 +227,100 @@ const recursiveQuery = async (
   return comments;
 };
 
+const registerRecipientEmail = async (email: string, api_key: string): Promise<boolean> => {
+  const response = await fetch(
+    new Request('https://api.brevo.com/v3/contacts', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        'api-key': api_key,
+      },
+      body: JSON.stringify({ email }),
+    })
+  );
+  const response_data = (await response.json()) as { id?: string; code?: string };
+  const result = !response.ok || ('id' in response_data && response_data.code != 'duplicate_parameter');
+  if (!result) {
+    console.warn(`Failed to register recipient email ${email}, response: ${response_data}`);
+  }
+  return result;
+};
+
+const postSendEmailRequest = async (data: any, api_key: string): Promise<boolean> => {
+  const response = await fetch(
+    new Request('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        'api-key': api_key,
+      },
+      body: JSON.stringify(data),
+    })
+  );
+  const response_data = (await response.json()) as { messageId?: string };
+  if (!response.ok || !response_data.messageId) {
+    console.error(`Failed to send email, response: ${response_data}`);
+    return false;
+  } else {
+    console.log(`Email sent successfully, message ID: ${response_data.messageId}`);
+  }
+  return true;
+};
+
+const getDateString = (timestamp: number, locale?: string): string => {
+  return new Date(timestamp).toLocaleString(locale ?? 'en-US', { dateStyle: 'long', timeStyle: 'medium' });
+};
+
+const sendEmail = async (email_event: SendCommentNotificationEmailEvent, api_key: string): Promise<boolean> => {
+  // Send notification to current author
+  const data = {
+    to: [
+      {
+        email: email_event.comment.author_email,
+        name: email_event.comment.author_name,
+      },
+    ],
+    templateId: 2, // Template for comment posted notification
+    params: {
+      original: {
+        comment_time: getDateString(email_event.comment.comment_timestamp),
+        comment: email_event.comment.markdown_content,
+      },
+    },
+  };
+  var result = await postSendEmailRequest(data, api_key);
+
+  // Send notification to parent author if exists
+  if (email_event.reply_to_comment && email_event.comment.author_email !== email_event.reply_to_comment.author_email) {
+    const data = {
+      to: [
+        {
+          email: email_event.reply_to_comment.author_email,
+          name: email_event.reply_to_comment.author_name,
+        },
+      ],
+      templateId: 1, // Template for new reply notification
+      params: {
+        original: {
+          comment_time: getDateString(email_event.reply_to_comment.comment_timestamp),
+          comment: email_event.reply_to_comment.markdown_content,
+        },
+        replied: {
+          author_name: email_event.comment.author_name,
+          comment_time: getDateString(email_event.comment.comment_timestamp),
+          comment: email_event.comment.markdown_content,
+        },
+      },
+    };
+    result = result && (await postSendEmailRequest(data, api_key));
+  }
+
+  return result;
+};
+
 export default {
-  // Our fetch handler is invoked on a HTTP request: we can send a message to a queue
-  // during (or after) a request.
-  // https://developers.cloudflare.com/queues/platform/javascript-apis/#producer
   async fetch(req, env, ctx): Promise<Response> {
     const getReponse = async (body?: BodyInit | null, init?: ResponseInit) =>
       setCorsHeaderToResponse(
@@ -196,33 +345,36 @@ export default {
         const event = (await req.json()) as PostCommentEvent;
 
         // Check parent comment existence
-        let level = 0;
+        var level = 0;
+        var parent_comment = null;
         if (event.parent_comment_id) {
-          const query = env.COMMENT_DB.prepare(
-            'SELECT level \
+          const parent_comment_query = env.COMMENT_DB.prepare(
+            'SELECT level, id, html_content, markdown_content, comment_timestamp_ms, author_name, author_email \
             FROM comments \
             WHERE id = ?1 \
             LIMIT 1'
           );
-          const parent_comment = await query.bind(event.parent_comment_id).first();
+          parent_comment = await parent_comment_query.bind(event.parent_comment_id).first<ParentCommentsRow>();
           if (!parent_comment) {
             console.warn(`Parent comment ${event.parent_comment_id} not found`);
             return getReponse('Parent comment not found', { status: 404 });
           }
-          level = Number.parseInt(parent_comment.level as string) + 1;
+          level = parent_comment.level + 1;
         }
 
         // Convert markdown to HTML
         const html_content = await markdownToHtml(event.content);
 
         // Insert into D1 database
-        const command = env.COMMENT_DB.prepare(
+        const insert_command = env.COMMENT_DB.prepare(
           'INSERT INTO comments ( \
           article_id, parent_id, level, author_name, author_email, author_website, markdown_content, html_content, \
-          comment_timestamp_ms) \
-          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)'
+          comment_timestamp_ms, uuid) \
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)'
         );
-        const result = await command
+        const uuid = self.crypto.randomUUID();
+        const send_time = event.timestamp_ms || new Date().getTime();
+        const result = await insert_command
           .bind(
             event.article_id,
             event.parent_comment_id || 0,
@@ -232,14 +384,45 @@ export default {
             event.website || '',
             event.content,
             html_content,
-            event.timestamp_ms || new Date().getTime()
+            send_time,
+            uuid
           )
           .run();
         if (result.error) {
           throw new DatabaseError(result.error);
         }
-        console.log(result.results);
-        return getReponse('{}');
+
+        // Send email notification (queued)
+        if (event.email) {
+          const last_insert_id_command = env.COMMENT_DB.prepare('SELECT id FROM comments WHERE uuid = ?1 LIMIT 1');
+          const last_insert_id = await last_insert_id_command.bind(uuid).first<IdOnlyCommentRow>();
+          if (!last_insert_id) {
+            console.error('Failed to get last insert ID. This should never happen!');
+            return getReponse('OK');
+          }
+          const email_event = {
+            comment: {
+              comment_id: last_insert_id.id,
+              comment_timestamp: event.timestamp_ms || new Date().getTime(),
+              author_name: event.author,
+              author_email: event.email,
+              markdown_content: event.content,
+            },
+            reply_to_comment: parent_comment
+              ? {
+                  comment_id: parent_comment.id,
+                  comment_timestamp: parent_comment.comment_timestamp_ms,
+                  author_name: parent_comment.author_name,
+                  author_email: parent_comment.author_email,
+                  markdown_content: parent_comment.markdown_content,
+                }
+              : null,
+          } as SendCommentNotificationEmailEvent;
+
+          await env.EMAIL_QUEUE.send(email_event);
+        }
+
+        return getReponse('OK');
       }
 
       // GET request for fetching comments
@@ -286,4 +469,28 @@ export default {
       return getReponse('Internal server error', { status: 500 });
     }
   },
-} satisfies ExportedHandler<Env>;
+
+  async queue(batch, env): Promise<void> {
+    for (const message of batch.messages) {
+      try {
+        const event = message.body;
+
+        // Try register recipient email, ignore failure when already added
+        await registerRecipientEmail(event.comment.author_email, env.BREVO_API_KEY);
+        if (event.reply_to_comment) {
+          await registerRecipientEmail(event.reply_to_comment.author_email, env.BREVO_API_KEY);
+        }
+
+        // Send email notification
+        if (await sendEmail(event, env.BREVO_API_KEY)) {
+          message.ack();
+        } else {
+          message.retry();
+        }
+      } catch (e) {
+        console.error(`Error catched:\n${(e as Error).message}\n`);
+        message.retry();
+      }
+    }
+  },
+} satisfies ExportedHandler<Env, SendCommentNotificationEmailEvent>;
