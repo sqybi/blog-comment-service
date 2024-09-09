@@ -373,7 +373,7 @@ export default {
           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)'
         );
         const uuid = self.crypto.randomUUID();
-        const send_time = event.timestamp_ms || new Date().getTime();
+        const send_time = new Date().getTime();
         const result = await insert_command
           .bind(
             event.article_id,
@@ -403,7 +403,7 @@ export default {
           const email_event = {
             comment: {
               comment_id: last_insert_id.id,
-              comment_timestamp: event.timestamp_ms || new Date().getTime(),
+              comment_timestamp: send_time,
               author_name: event.author,
               author_email: event.email,
               markdown_content: event.content,
