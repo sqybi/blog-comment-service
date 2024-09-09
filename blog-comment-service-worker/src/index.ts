@@ -58,7 +58,7 @@ type EmailCommentProperties = {
   comment_id: number;
   comment_timestamp: number;
   author_name: string;
-  author_email: string;
+  author_email?: string;
   markdown_content: string;
 };
 
@@ -392,22 +392,26 @@ export default {
           throw new DatabaseError(result.error);
         }
 
+        // Send Telegram notification (queued)
+        const last_insert_id_command = env.COMMENT_DB.prepare('SELECT id FROM comments WHERE uuid = ?1 LIMIT 1');
+        const last_insert_id = await last_insert_id_command.bind(uuid).first<IdOnlyCommentRow>();
+        if (!last_insert_id) {
+          console.error('Failed to get last insert ID. This should never happen!');
+          return getReponse('OK');
+        }
+        const comment_properties = {
+          comment_id: last_insert_id.id,
+          comment_timestamp: send_time,
+          author_name: event.author,
+          author_email: event.email,
+          markdown_content: event.content,
+        } as EmailCommentProperties;
+        await env.MESSAGE_QUEUE.send(comment_properties);
+
         // Send email notification (queued)
         if (event.email) {
-          const last_insert_id_command = env.COMMENT_DB.prepare('SELECT id FROM comments WHERE uuid = ?1 LIMIT 1');
-          const last_insert_id = await last_insert_id_command.bind(uuid).first<IdOnlyCommentRow>();
-          if (!last_insert_id) {
-            console.error('Failed to get last insert ID. This should never happen!');
-            return getReponse('OK');
-          }
           const email_event = {
-            comment: {
-              comment_id: last_insert_id.id,
-              comment_timestamp: send_time,
-              author_name: event.author,
-              author_email: event.email,
-              markdown_content: event.content,
-            },
+            comment: comment_properties,
             reply_to_comment: parent_comment
               ? {
                   comment_id: parent_comment.id,
@@ -418,7 +422,6 @@ export default {
                 }
               : null,
           } as SendCommentNotificationEmailEvent;
-
           await env.EMAIL_QUEUE.send(email_event);
         }
 
@@ -476,8 +479,18 @@ export default {
         const event = message.body;
 
         // Try register recipient email, ignore failure when already added
+        if (!event.comment.author_email) {
+          console.error('Email address not found in comment event, will not retry');
+          message.ack();
+          continue;
+        }
         await registerRecipientEmail(event.comment.author_email, env.BREVO_API_KEY);
         if (event.reply_to_comment) {
+          if (!event.reply_to_comment.author_email) {
+            console.error('Email address not found in reply_to_comment event, will not retry');
+            message.ack();
+            continue;
+          }
           await registerRecipientEmail(event.reply_to_comment.author_email, env.BREVO_API_KEY);
         }
 

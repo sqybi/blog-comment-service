@@ -1,0 +1,13 @@
+{
+  "folders": [
+    {
+      "path": "blog-comment-service-worker"
+    },
+    {
+      "path": "blog-comment-telegram-notifier"
+    },
+    {
+      "path": "."
+    }
+  ]
+}

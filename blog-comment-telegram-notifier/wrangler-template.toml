@@ -1,5 +1,5 @@
 #:schema node_modules/wrangler/config-schema.json
-name = "blog-comment-service"  # TODO: Change this to a unique name for your project
+name = "blog-comment-telegram-notifier"
 main = "src/index.ts"
 compatibility_date = "2024-09-03"
 
@@ -16,8 +16,8 @@ mode = "smart"
 # Note: Use secrets to store sensitive data.
 # - https://developers.cloudflare.com/workers/configuration/secrets/
 [vars]
-ALLOWED_ORIGINS = "*"  # TODO: Change this to the allowed origins for your project, split by semi-colons (;)
-BREVO_API_KEY = "xkeysib-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"  # TODO: Change this to your API key
+TELEGRAM_BOT_TOKEN = "xxxxxxxxxx:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" # TODO: Change this to your Telegram bot token
+TELEGRAM_CHAT_ID = "1234567"                                       # TODO: Change this to your Telegram chat ID
 
 # Bind the Workers AI model catalog. Run machine learning models, powered by serverless GPUs, on Cloudflare’s global network
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/#workers-ai
@@ -36,10 +36,10 @@ BREVO_API_KEY = "xkeysib-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"  # TODO: Change this 
 
 # Bind a D1 database. D1 is Cloudflare’s native serverless SQL database.
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/#d1-databases
-[[d1_databases]]
-binding = "COMMENT_DB"
-database_name = "blog-comments"  # TODO: Change this to the name of your database
-database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # TODO: Change this to your database ID
+# [[d1_databases]]
+# binding = "MY_DB"
+# database_name = "my-database"
+# database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
 # Bind a dispatch namespace. Use Workers for Platforms to deploy serverless functions programmatically on behalf of your customers.
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/#dispatch-namespace-bindings-workers-for-platforms
@@ -80,19 +80,18 @@ database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # TODO: Change this to you
 
 # Bind a Queue producer. Use this binding to schedule an arbitrary task that may be processed later by a Queue consumer.
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/#queues
-[[queues.producers]]
-binding = "EMAIL_QUEUE"
-queue = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"  # TODO: Change this to your queue name, not ID
+# [[queues.producers]]
+# binding = "MY_QUEUE"
+# queue = "my-queue"
 
 # Bind a Queue consumer. Queue Consumers can retrieve tasks scheduled by Producers to act on them.
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/#queues
 [[queues.consumers]]
-queue = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"  # TODO: Change this to your queue name, not ID
+queue = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" # TODO: Change this to your queue name, not ID
 # Optional: Configure batching and retries: https://developers.cloudflare.com/queues/learning/batching-retries/
-max_batch_size = 10
-max_batch_timeout = 5
-max_retries = 3
-retry_delay = 0
+# max_batch_size = 10
+# max_batch_timeout = 30
+# max_retries = 10
 # dead_letter_queue = "my-queue-dlq"
 
 # Bind an R2 Bucket. Use R2 to store arbitrarily large blobs of data, such as files.
@@ -112,7 +111,3 @@ retry_delay = 0
 # [[vectorize]]
 # binding = "MY_INDEX"
 # index_name = "my-index"
-
-[[routes]]
-custom_domain = true
-pattern = "blog-comment-service.your-domain.com"  # TODO: Change this to your custom domain
