@@ -23,6 +23,10 @@ type PostCommentEvent = {
   // The unique identifier of the article, e.g., the last part of the URL, required
   article_id: string;
 
+  // The original URL address when posting the comment
+  // TODO(sqybi): Save this field to database
+  article_original_url: string;
+
   // The parent comment ID, if any
   parent_comment_id?: number;
 
@@ -69,6 +73,7 @@ type SendCommentNotificationEmailEvent = {
 
 type TelegramCommentProperties = {
   article_id: string;
+  article_original_url: string;
   comment_id: number;
   comment_timestamp: number;
   author_name: string;
@@ -410,6 +415,7 @@ export default {
         }
         const comment_properties = {
           article_id: event.article_id,
+          article_original_url: event.article_original_url,
           comment_id: last_insert_id.id,
           comment_timestamp: send_time,
           author_name: event.author,

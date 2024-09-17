@@ -18,6 +18,7 @@ const TELEGRAM_MESSAGE_LENGTH_LIMIT = 4096;
 
 type TelegramCommentProperties = {
   article_id: string;
+  article_original_url: string;
   comment_id: number;
   comment_timestamp: number;
   author_name: string;
@@ -40,12 +41,9 @@ export default {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: parseInt(env.TELEGRAM_CHAT_ID),
-          text: `你收到了来自 ${msg.author_name} ${
-            msg.author_email ? `(${msg.author_email}) ` : ''
-          }的博客评论！\n页面：${msg.article_id}\n\n${msg.markdown_content}`.substring(
-            0,
-            TELEGRAM_MESSAGE_LENGTH_LIMIT
-          ),
+          text: `你收到了来自 ${msg.author_name} ${msg.author_email ? `(${msg.author_email}) ` : ''}的博客评论！\n${
+            msg.article_original_url
+          }\n\n${msg.markdown_content}`.substring(0, TELEGRAM_MESSAGE_LENGTH_LIMIT),
         }),
       });
       const response_json = (await response.json()) as any;
