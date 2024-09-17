@@ -67,6 +67,15 @@ type SendCommentNotificationEmailEvent = {
   reply_to_comment: EmailCommentProperties | null;
 };
 
+type TelegramCommentProperties = {
+  article_id: string;
+  comment_id: number;
+  comment_timestamp: number;
+  author_name: string;
+  author_email?: string;
+  markdown_content: string;
+};
+
 type Comment = {
   // The unique identifier of the comment
   id: number;
@@ -400,12 +409,13 @@ export default {
           return getReponse('OK');
         }
         const comment_properties = {
+          article_id: event.article_id,
           comment_id: last_insert_id.id,
           comment_timestamp: send_time,
           author_name: event.author,
           author_email: event.email,
           markdown_content: event.content,
-        } as EmailCommentProperties;
+        } as TelegramCommentProperties;
         await env.MESSAGE_QUEUE.send(comment_properties);
 
         // Send email notification (queued)
